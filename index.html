@@ -1,212 +1,404 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PDF 3×3 N‑up (Client‑Only)</title>
-  <style>
-    :root { --bg:#0b0e14; --fg:#e6e6e6; --muted:#9aa4b2; --accent:#6aa3ff; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444 }
-    html,body{height:100%;}
-    body{margin:0; font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:var(--bg); color:var(--fg); display:grid; place-items:center}
-    .wrap{width:min(920px,94vw);}
-    h1{font-size:clamp(18px,2.8vw,28px); margin:24px 0 6px}
-    p{color:var(--muted); margin:0 0 12px}
-    .panel{background:#0f1420; border:1px solid #1f2836; border-radius:14px; padding:14px}
-    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
-    .btn{background:var(--accent); color:#071019; font-weight:600; padding:10px 14px; border-radius:10px; border:none; cursor:pointer}
-    .btn:disabled{opacity:.6; cursor:not-allowed}
-    input[type="file"]{display:block; margin:8px 0}
-    pre{white-space:pre-wrap; background:#0f1420; border:1px solid #1f2836; border-radius:12px; padding:10px; min-height:72px; max-height:240px; overflow:auto}
-    .progress{height:10px; background:#1b2230; border-radius:999px; overflow:hidden; margin-top:8px}
-    .bar{height:100%; width:0%; background:linear-gradient(90deg,#6aa3ff,#9f7aea); transition:width .15s}
-    small{color:#9aa4b2}
-    .status{display:flex; align-items:center; gap:8px; margin-top:8px}
-    .dot{width:10px; height:10px; border-radius:999px; background:#334155; position:relative}
-    .dot.spin::after{content:""; position:absolute; inset:-6px; border:2px solid #334155; border-top-color:#93c5fd; border-radius:999px; animation:spin .9s linear infinite}
-    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
-    @keyframes spin{to{transform:rotate(1turn)}}
-  </style>
-</head>
-<body>
-<div class="wrap">
-  <h1>PDF 3×3 N‑up（クライアントのみ）</h1>
-  <p>PDFを選ぶと、<b>元PDFの用紙サイズそのまま</b>で 3×3（9アップ）に面付けしたPDFを生成して自動ダウンロードする。</p>
-
-  <div class="panel">
-    <div class="row">
-      <input id="file" type="file" accept="application/pdf" />
-      <button id="demo18" class="btn" type="button">デモPDFでテスト（18ページ）</button>
-      <button id="demo9" class="btn" type="button">デモ（9ページ）</button>
-      <button id="demo27" class="btn" type="button">デモ（27ページ）</button>
-    </div>
-    <div class="status"><div id="dot" class="dot"></div><span id="phase">待機中…</span></div>
-    <div class="progress"><div class="bar" id="bar"></div></div>
-    <pre id="log">待機中…</pre>
-    <small>※ ブラウザ内でのみ処理。アップロードは行わない。暗号化PDFは非対応。</small>
-  </div>
-</div>
-
-<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<script>
-(function(){
-  const { PDFDocument, StandardFonts, rgb } = PDFLib;
-  const elFile = document.getElementById('file');
-  const elDemo18 = document.getElementById('demo18');
-  const elDemo9  = document.getElementById('demo9');
-  const elDemo27 = document.getElementById('demo27');
-  const elLog  = document.getElementById('log');
-  const elBar  = document.getElementById('bar');
-  const elDot  = document.getElementById('dot');
-  const elPhase= document.getElementById('phase');
-
-  const setPhase = (text, spinning=false, cls) => {
-    elPhase.textContent = text;
-    elDot.className = 'dot' + (spinning? ' spin':'');
-    if(cls){ elPhase.className = cls; } else { elPhase.className=''; }
-  };
-  const appendLog = (m)=>{ elLog.textContent += (elLog.textContent? "
-" : "") + m; elLog.scrollTop = elLog.scrollHeight; };
-  const resetLog = (m)=>{ elLog.textContent = m || ''; };
-  const progress = (p)=>{ elBar.style.width = Math.max(0, Math.min(100, p)) + '%'; };
-  const disableUI = (on)=>{
-    [elFile, elDemo18, elDemo9, elDemo27].forEach(el=>{ if(!el) return; el.disabled = !!on; });
-  };
-
-  // ===== Core: 3×3 N‑up; per‑page embed for stability =====
-  async function nUp3x3(inputBytes, srcName){
-    const t0 = performance.now();
-    setPhase('解析開始…', true); resetLog('解析開始…'); progress(3);
-
-    const marginPt = 20; // 約7mm
-
-    // 1) Load source
-    const srcDoc = await PDFDocument.load(inputBytes, { ignoreEncryption: false });
-    const pageCount = srcDoc.getPageCount();
-    if (!pageCount) throw new Error('ページがありません');
-    appendLog(`読み込み完了: ${pageCount} ページ`);
-
-    // 2) Base size = first page
-    const first = srcDoc.getPage(0);
-    const baseW = first.getWidth();
-    const baseH = first.getHeight();
-    appendLog(`用紙サイズ: ${baseW.toFixed(1)} × ${baseH.toFixed(1)} pt`);
-
-    // 3) Layout numbers
-    const cols = 3, rows = 3, perSheet = cols*rows;
-
-    // 4) Calculate cell rect
-    const innerW = baseW - marginPt*2;
-    const innerH = baseH - marginPt*2;
-    if (innerW <= 0 || innerH <= 0) throw new Error('余白が大きすぎる/元PDFが小さすぎる');
-    const cellW = innerW / cols;
-    const cellH = innerH / rows;
-    appendLog(`セル: ${cellW.toFixed(2)} × ${cellH.toFixed(2)} pt`);
-
-    // 5) Create output
-    const out = await PDFDocument.create();
-
-    const sheets = Math.ceil(pageCount / perSheet);
-    appendLog(`出力ページ数（面付け後）: ${sheets}`);
-
-    for (let s = 0; s < sheets; s++){
-      const page = out.addPage([baseW, baseH]);
-      setPhase(`面付け中… ${s+1}/${sheets}`, true);
-
-      for (let r = 0; r < rows; r++){
-        for (let c = 0; c < cols; c++){
-          const idx = s*perSheet + r*cols + c;
-          if (idx >= pageCount) continue;
-
-          const embedded = await out.embedPages(srcDoc, [idx]);
-          const ep = embedded && embedded[0];
-          if (!ep) throw new Error('ページの埋め込みに失敗しました (index ' + idx + ')');
-
-          const srcW = ep.width, srcH = ep.height;
-          const scale = Math.min(cellW/srcW, cellH/srcH);
-          const drawW = srcW * scale;
-          const drawH = srcH * scale;
-
-          const x = marginPt + c*cellW + (cellW - drawW)/2;
-          const y = baseH - marginPt - (r+1)*cellH + (cellH - drawH)/2;
-
-          page.drawPage(ep, { x, y, width: drawW, height: drawH });
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF面付け変換ツール (N-up)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <style>
+        /* カスタムスタイル */
+        .file-drop-area {
+            transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out;
         }
-      }
-      const p = ((s+1)/sheets)*100; progress(p);
-      appendLog(`完了: シート ${s+1}/${sheets} (進捗 ${p.toFixed(1)}%)`);
-    }
+        .dragging {
+            background-color: #e0f2fe; /* bg-sky-100 */
+            border-color: #0ea5e9; /* border-sky-500 */
+        }
+        /* プログレスバーのアニメーション */
+        progress {
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans antialiased">
+    <div class="container mx-auto p-4 md:p-8 max-w-4xl">
 
-    setPhase('PDFを生成中…', true); appendLog('PDFを生成中…');
-    const outBytes = await out.save();
+        <!-- ヘッダー -->
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">PDF面付け変換ツール</h1>
+            <p class="mt-2 text-lg text-gray-600 dark:text-gray-400">PDFのページを1枚の用紙に複数配置（N-up）します。</p>
+            <p class="mt-1 text-sm text-red-500 dark:text-red-400">⚠️ ファイルはサーバーにアップロードされません。すべての処理はブラウザ内で完結します。</p>
+        </header>
 
-    const t1 = performance.now();
-    setPhase(`完了 (${((t1-t0)/1000).toFixed(2)} 秒)`, false, 'ok');
-    appendLog(`所要時間: ${((t1-t0)/1000).toFixed(2)} 秒`);
+        <main class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 md:p-8">
+            
+            <!-- 1. ファイル選択 -->
+            <section id="file-input-section">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2 dark:border-gray-600">1. ファイルを選択</h2>
+                <div id="drop-area" class="file-drop-area border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700">
+                    <div class="flex flex-col items-center justify-center">
+                        <svg class="w-12 h-12 text-gray-400 dark:text-gray-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m.75 12 3 3m0 0 3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                        </svg>
+                        <p class="text-gray-600 dark:text-gray-400">ここにPDFファイルをドラッグ＆ドロップ</p>
+                        <p class="text-sm text-gray-500 dark:text-gray-500 mt-1">または</p>
+                        <button id="select-file-btn" class="mt-4 bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                            ファイルを選択
+                        </button>
+                        <input type="file" id="file-input" class="hidden" accept=".pdf">
+                    </div>
+                </div>
+                <div class="text-center mt-4">
+                     <button id="demo-btn" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg transition-colors text-sm">
+                        デモ用PDF (20ページ) で試す
+                    </button>
+                </div>
+                <p id="file-name" class="mt-4 text-center text-gray-700 dark:text-gray-300"></p>
+            </section>
 
-    const fname = (srcName||'output').replace(/\.pdf$/i,'') + '_3x3.pdf';
-    triggerDownload(outBytes, fname);
-  }
+            <!-- 2. 設定 -->
+            <section class="mt-8">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2 dark:border-gray-600">2. 設定</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                        <label for="layout" class="block text-sm font-medium text-gray-700 dark:text-gray-300">レイアウト</label>
+                        <select id="layout" class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:bg-gray-700">
+                            <option value="1x2">1x2 (2ページ/枚)</option>
+                            <option value="2x2">2x2 (4ページ/枚)</option>
+                            <option value="2x3">2x3 (6ページ/枚)</option>
+                            <option value="3x3" selected>3x3 (9ページ/枚)</option>
+                            <option value="4x4">4x4 (16ページ/枚)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="margin" class="block text-sm font-medium text-gray-700 dark:text-gray-300">余白 (mm)</label>
+                        <input type="number" id="margin" value="10" class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:bg-gray-700">
+                    </div>
+                    <div>
+                        <label for="gutter" class="block text-sm font-medium text-gray-700 dark:text-gray-300">セル間隔 (mm)</label>
+                        <input type="number" id="gutter" value="5" class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:bg-gray-700">
+                    </div>
+                </div>
+            </section>
 
-  function triggerDownload(uint8, filename){
-    const blob = new Blob([uint8], {type:'application/pdf'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename; document.body.appendChild(a); a.click();
-    setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
-  }
+            <!-- 3. 実行 -->
+            <section class="mt-8">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2 dark:border-gray-600">3. 実行</h2>
+                <button id="convert-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed" disabled>
+                    変換開始
+                </button>
+            </section>
 
-  // ===== Demo generator (TEST CASES) =====
-  async function buildDemoPdf(pages){
-    const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.HelveticaBold);
-    for(let i=1;i<=pages;i++){
-      const pg = doc.addPage([595.28, 841.89]); // ≈A4 portrait
-      const size = 64;
-      pg.drawRectangle({x:40,y:40,width:pg.getWidth()-80,height:pg.getHeight()-80, borderColor: rgb(0.5,0.6,0.9), borderWidth:2});
-      pg.drawText(`PAGE ${i}`, { x: 70, y: pg.getHeight()/2 - size/2, size, font, color: rgb(0.9,0.9,0.9)});
-    }
-    return await doc.save();
-  }
+            <!-- 4. 進捗とログ -->
+            <section id="progress-section" class="mt-8 hidden">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2 dark:border-gray-600">4. 進捗状況</h2>
+                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full">
+                    <div id="progress-bar" class="bg-blue-600 text-xs font-medium text-blue-100 text-center p-0.5 leading-none rounded-full" style="width: 0%">0%</div>
+                </div>
+                <div class="mt-4">
+                    <label for="log" class="block text-sm font-medium text-gray-700 dark:text-gray-300">ログ</label>
+                    <pre id="log" class="mt-1 w-full h-48 bg-gray-900 text-white text-sm p-4 rounded-md overflow-y-auto font-mono"></pre>
+                </div>
+            </section>
+            
+            <!-- エラー表示 -->
+            <div id="error-box" class="hidden mt-6 p-4 bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-200 rounded-lg">
+                <p id="error-message"></p>
+            </div>
 
-  async function runWithBytes(bytes, name){
-    try{
-      disableUI(true);
-      progress(0); setPhase('準備中…', true); resetLog('準備中…');
-      await nUp3x3(bytes, name);
-    }catch(err){
-      console.error(err);
-      setPhase('エラー', false, 'err');
-      const msg = (err && (err.message || String(err))) || '不明なエラー';
-      appendLog('エラー：' + msg + '
-(暗号化PDF/破損/非対応バージョンの可能性)');
-    }finally{
-      disableUI(false);
-    }
-  }
+        </main>
 
-  // ===== Wiring =====
-  elFile.addEventListener('change', async (ev)=>{
-    const file = ev.target.files && ev.target.files[0];
-    if(!file){ setPhase('ファイル未選択', false, 'warn'); return; }
-    if(!/\.pdf$/i.test(file.name)){ setPhase('PDFのみ対応', false, 'warn'); return; }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    appendLog(`入力: ${file.name} / ${(file.size/1024/1024).toFixed(2)} MB`);
-    await runWithBytes(bytes, file.name);
-  });
+        <footer class="text-center mt-8 text-sm text-gray-500 dark:text-gray-400">
+            <p>&copy; 2024 PDF N-up Tool. All rights reserved.</p>
+        </footer>
+    </div>
 
-  elDemo18.addEventListener('click', async ()=>{
-    const demo = await buildDemoPdf(18); // === TEST CASE 1: 18ページ → 3枚
-    await runWithBytes(demo, 'demo_18pages.pdf');
-  });
-  elDemo9.addEventListener('click', async ()=>{
-    const demo = await buildDemoPdf(9);  // === TEST CASE 2: 9ページ → 1枚
-    await runWithBytes(demo, 'demo_9pages.pdf');
-  });
-  elDemo27.addEventListener('click', async ()=>{
-    const demo = await buildDemoPdf(27); // === TEST CASE 3: 27ページ → 3枚
-    await runWithBytes(demo, 'demo_27pages.pdf');
-  });
-})();
-</script>
+    <script>
+        // グローバル変数と定数
+        const { PDFDocument, rgb, StandardFonts } = PDFLib;
+        const MM_TO_PT = 72 / 25.4; // 1mmあたりのポイント数
+
+        // DOM要素の取得
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('file-input');
+        const selectFileBtn = document.getElementById('select-file-btn');
+        const demoBtn = document.getElementById('demo-btn');
+        const fileNameDisplay = document.getElementById('file-name');
+        const convertBtn = document.getElementById('convert-btn');
+        const progressSection = document.getElementById('progress-section');
+        const progressBar = document.getElementById('progress-bar');
+        const logArea = document.getElementById('log');
+        const errorBox = document.getElementById('error-box');
+        const errorMessage = document.getElementById('error-message');
+
+        let selectedFile = null;
+        let originalFileName = '';
+
+        // --- イベントリスナーの設定 ---
+
+        // ファイル選択ボタン
+        selectFileBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) handleFile(file);
+        });
+
+        // ドラッグ＆ドロップ
+        dropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropArea.classList.add('dragging');
+        });
+        dropArea.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropArea.classList.remove('dragging');
+        });
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropArea.classList.remove('dragging');
+            const file = e.dataTransfer.files[0];
+            if (file) handleFile(file);
+        });
+        
+        // デモ用PDFボタン
+        demoBtn.addEventListener('click', async () => {
+            try {
+                log('デモ用PDFを生成中...');
+                showProgress();
+                const pdfBytes = await generateDemoPdf();
+                selectedFile = new Blob([pdfBytes], { type: 'application/pdf' });
+                originalFileName = 'demo.pdf';
+                fileNameDisplay.textContent = `選択中のファイル: ${originalFileName} (デモ)`;
+                convertBtn.disabled = false;
+                log('デモ用PDFの準備ができました。');
+            } catch (error) {
+                handleError('デモPDFの生成に失敗しました。', error);
+            }
+        });
+
+        // 変換開始ボタン
+        convertBtn.addEventListener('click', processPdf);
+
+        // --- 関数定義 ---
+
+        /**
+         * 選択されたファイルを処理し、UIを更新する
+         * @param {File} file 選択されたPDFファイル
+         */
+        function handleFile(file) {
+            if (file.type !== 'application/pdf') {
+                handleError('PDFファイルを選択してください。');
+                return;
+            }
+            selectedFile = file;
+            originalFileName = file.name;
+            fileNameDisplay.textContent = `選択中のファイル: ${originalFileName}`;
+            convertBtn.disabled = false;
+            hideError();
+        }
+
+        /**
+         * ログエリアにメッセージを追記する
+         * @param {string} message 表示するメッセージ
+         */
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logArea.textContent += `[${timestamp}] ${message}\n`;
+            logArea.scrollTop = logArea.scrollHeight; // 自動スクロール
+        }
+        
+        /**
+         * プログレスバーの表示を更新する
+         * @param {number} percentage 0から100の間の数値
+         */
+        function updateProgress(percentage) {
+            const p = Math.round(percentage);
+            progressBar.style.width = `${p}%`;
+            progressBar.textContent = `${p}%`;
+        }
+
+        /**
+         * 進捗表示エリアを表示/リセットする
+         */
+        function showProgress() {
+            progressSection.classList.remove('hidden');
+            logArea.textContent = '';
+            updateProgress(0);
+        }
+        
+        /**
+         * エラーメッセージを表示する
+         * @param {string} message ユーザーに表示するメッセージ
+         * @param {Error} [error] コンソールに出力するエラーオブジェクト
+         */
+        function handleError(message, error = null) {
+            errorMessage.textContent = message;
+            errorBox.classList.remove('hidden');
+            if (error) {
+                console.error(error);
+                log(`エラー: ${error.message}`);
+            }
+            log(`処理が中断されました: ${message}`);
+            convertBtn.disabled = false; // 再試行できるように
+        }
+
+        /**
+         * エラーメッセージを非表示にする
+         */
+        function hideError() {
+            errorBox.classList.add('hidden');
+        }
+        
+        /**
+         * デモ用のPDFを生成する
+         * @returns {Promise<Uint8Array>} 生成されたPDFのバイト配列
+         */
+        async function generateDemoPdf() {
+            const pdfDoc = await PDFDocument.create();
+            const pageCount = 20;
+            const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+            for (let i = 0; i < pageCount; i++) {
+                const page = pdfDoc.addPage();
+                const { width, height } = page.getSize();
+                page.drawText(`デモ用PDF - ${i + 1}ページ目`, {
+                    x: 50,
+                    y: height / 2,
+                    font,
+                    size: 50,
+                    color: rgb(0.9, 0.9, 0.9),
+                });
+            }
+            return pdfDoc.save();
+        }
+
+        /**
+         * PDFの面付け処理を実行するメイン関数
+         */
+        async function processPdf() {
+            if (!selectedFile) {
+                handleError('ファイルが選択されていません。');
+                return;
+            }
+
+            // UIの初期化
+            showProgress();
+            hideError();
+            convertBtn.disabled = true;
+
+            try {
+                log('処理を開始します...');
+                log('数百ページのPDFの場合、処理に時間がかかることがあります。');
+
+                // 設定値の取得と変換
+                const layoutValue = document.getElementById('layout').value;
+                const [cols, rows] = layoutValue.split('x').map(Number);
+                const pagesPerSheet = cols * rows;
+                const margin = parseFloat(document.getElementById('margin').value) * MM_TO_PT;
+                const gutter = parseFloat(document.getElementById('gutter').value) * MM_TO_PT;
+
+                log(`レイアウト: ${cols}x${rows} (${pagesPerSheet}ページ/枚)`);
+                log(`余白: ${margin / MM_TO_PT}mm, セル間隔: ${gutter / MM_TO_PT}mm`);
+
+                // ファイルをArrayBufferとして読み込み
+                const fileBuffer = await selectedFile.arrayBuffer();
+                log('PDFファイルを読み込んでいます...');
+                
+                // pdf-libでPDFをロード
+                const srcPdf = await PDFDocument.load(fileBuffer, { 
+                    // 暗号化されたPDFの場合にエラーを投げる
+                    ignoreEncryption: false 
+                });
+
+                if (srcPdf.isEncrypted) {
+                    throw new Error('暗号化されたPDFはサポートされていません。');
+                }
+
+                const pageCount = srcPdf.getPageCount();
+                log(`元のPDFのページ数: ${pageCount}`);
+
+                // 新しいPDFを作成
+                const newPdf = await PDFDocument.create();
+                
+                // 元のPDFのページを新しいPDFに埋め込み
+                log('ページを埋め込み中...');
+                const embeddedPages = await newPdf.embedPages(srcPdf.getPages());
+                
+                // 最初のページのサイズを基準にする
+                const firstPage = srcPdf.getPage(0);
+                const { width: srcWidth, height: srcHeight } = firstPage.getSize();
+                
+                // 出力ページのサイズを計算
+                const newPageWidth = (srcWidth * cols) + (gutter * (cols - 1)) + (margin * 2);
+                const newPageHeight = (srcHeight * rows) + (gutter * (rows - 1)) + (margin * 2);
+
+                log(`出力ページサイズ: ${Math.round(newPageWidth)}pt x ${Math.round(newPageHeight)}pt`);
+
+                // ページを配置
+                let currentPage = null;
+                for (let i = 0; i < pageCount; i++) {
+                    const pageIndexInSheet = i % pagesPerSheet;
+
+                    // 新しいシートが必要な場合
+                    if (pageIndexInSheet === 0) {
+                        currentPage = newPdf.addPage([newPageWidth, newPageHeight]);
+                        log(`${Math.floor(i / pagesPerSheet) + 1}枚目のシートを作成...`);
+                    }
+
+                    // 配置位置を計算
+                    const col = pageIndexInSheet % cols;
+                    const row = Math.floor(pageIndexInSheet / cols);
+
+                    const x = margin + col * (srcWidth + gutter);
+                    // Y座標は左下が原点なので、上から計算する
+                    const y = newPageHeight - margin - (row + 1) * srcHeight - row * gutter;
+
+                    // ページを描画
+                    currentPage.drawPage(embeddedPages[i], {
+                        x,
+                        y,
+                        width: srcWidth,
+                        height: srcHeight,
+                    });
+                    
+                    updateProgress(((i + 1) / pageCount) * 100);
+                }
+
+                log('PDFを生成中... これには少し時間がかかる場合があります。');
+                const newPdfBytes = await newPdf.save();
+
+                // ファイルをダウンロード
+                const blob = new Blob([newPdfBytes], { type: 'application/pdf' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const suffix = `_${layoutValue}.pdf`;
+                a.download = originalFileName.replace(/\.pdf$/i, '') + suffix;
+                document.body.appendChild(a);
+                a.click();
+                
+                log('ダウンロードを開始しました。');
+                log('処理が完了しました！');
+                
+                // 後片付け
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }, 100);
+
+            } catch (error) {
+                if (error.message.includes('encrypted')) {
+                    handleError('エラー: このPDFはパスワードで保護されているため、処理できません。', error);
+                } else {
+                    handleError('エラーが発生しました。ファイルが破損しているか、非対応の形式である可能性があります。', error);
+                }
+            } finally {
+                convertBtn.disabled = false; // 処理完了後、ボタンを再度有効化
+            }
+        }
+    </script>
 </body>
 </html>
