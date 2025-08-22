@@ -15,10 +15,6 @@
             background-color: #e0f2fe; /* bg-sky-100 */
             border-color: #0ea5e9; /* border-sky-500 */
         }
-        /* プログレスバーのアニメーション */
-        progress {
-            transition: width 0.3s ease;
-        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans antialiased">
@@ -41,7 +37,7 @@
                         <svg class="w-12 h-12 text-gray-400 dark:text-gray-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m.75 12 3 3m0 0 3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
                         </svg>
-                        <p class="text-gray-600 dark:text-gray-400">ここにPDFファイル(複数可)をドラッグ＆ドロップ</p>
+                        <p class="text-gray-600 dark:text-gray-400">ここにPDFファイル(複数可)またはフォルダをドラッグ＆ドロップ</p>
                         <p class="text-sm text-gray-500 dark:text-gray-500 mt-1">または</p>
                         <div class="mt-4 flex flex-col sm:flex-row justify-center items-center gap-4">
                             <button id="select-file-btn" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-colors w-full sm:w-auto">
@@ -52,7 +48,7 @@
                             </button>
                         </div>
                         <input type="file" id="file-input" class="hidden" accept=".pdf" multiple>
-                        <p id="folder-support-note" class="text-xs text-gray-400 dark:text-gray-500 mt-3 hidden">※フォルダ選択はChromeやEdgeなどの一部ブラウザでのみ対応しています。</p>
+                        <p id="folder-support-note" class="text-xs text-gray-400 dark:text-gray-500 mt-3 hidden">※フォルダ機能はChromeやEdgeなどの一部ブラウザでのみ対応しています。</p>
                     </div>
                 </div>
                 <div class="text-center mt-4">
@@ -92,7 +88,7 @@
             <section class="mt-8">
                 <h2 class="text-xl font-semibold mb-4 border-b pb-2 dark:border-gray-600">3. 実行</h2>
                 <button id="convert-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed" disabled>
-                    変換開始
+                    変換して保存
                 </button>
             </section>
 
@@ -123,7 +119,7 @@
     <script>
         // グローバル変数と定数
         const { PDFDocument, rgb, StandardFonts } = PDFLib;
-        const MM_TO_PT = 72 / 25.4; // 1mmあたりのポイント数
+        const MM_TO_PT = 72 / 25.4;
 
         // DOM要素の取得
         const dropArea = document.getElementById('drop-area');
@@ -140,7 +136,7 @@
         const errorBox = document.getElementById('error-box');
         const errorMessage = document.getElementById('error-message');
 
-        let selectedFiles = [];
+        let selectedFiles = []; // { file: File, relativePath: string }[]
 
         // --- 初期化処理 ---
         document.addEventListener('DOMContentLoaded', () => {
@@ -153,55 +149,19 @@
         });
 
         // --- イベントリスナーの設定 ---
-
-        // ファイル選択ボタン
         selectFileBtn.addEventListener('click', () => fileInput.click());
-        fileInput.addEventListener('change', (e) => {
-            handleFiles(e.target.files);
-        });
-
-        // フォルダ選択ボタン
+        fileInput.addEventListener('change', (e) => handleFileSelection(e.target.files));
         selectFolderBtn.addEventListener('click', handleFolderSelection);
-
-        // ドラッグ＆ドロップ
-        dropArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dropArea.classList.add('dragging');
-        });
-        dropArea.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dropArea.classList.remove('dragging');
-        });
-        dropArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dropArea.classList.remove('dragging');
-            handleFiles(e.dataTransfer.files);
-        });
-        
-        // デモ用PDFボタン
-        demoBtn.addEventListener('click', async () => {
-            try {
-                log('デモ用PDFを生成中...');
-                showProgress();
-                const pdfBytes = await generateDemoPdf();
-                const demoFile = new File([pdfBytes], "demo.pdf", { type: "application/pdf" });
-                handleFiles([demoFile]);
-                log('デモ用PDFの準備ができました。');
-            } catch (error) {
-                handleError('デモPDFの生成に失敗しました。', error);
-            }
-        });
-
-        // 変換開始ボタン
+        dropArea.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dropArea.classList.add('dragging'); });
+        dropArea.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropArea.classList.remove('dragging'); });
+        dropArea.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); dropArea.classList.remove('dragging'); handleDrop(e.dataTransfer); });
+        demoBtn.addEventListener('click', generateAndSelectDemo);
         convertBtn.addEventListener('click', startBatchProcess);
 
         // --- 関数定義 ---
 
         /**
-         * フォルダ選択ダイアログを表示し、PDFファイルを読み込む
+         * フォルダ選択ダイアログを表示し、再帰的にPDFファイルを読み込む
          */
         async function handleFolderSelection() {
             if (!('showDirectoryPicker' in window)) {
@@ -210,52 +170,111 @@
             }
             try {
                 const dirHandle = await window.showDirectoryPicker();
-                const pdfFiles = [];
                 showProgress();
                 log(`フォルダ「${dirHandle.name}」をスキャン中...`);
-
-                for await (const entry of dirHandle.values()) {
-                    if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.pdf')) {
-                        const file = await entry.getFile();
-                        pdfFiles.push(file);
-                    }
-                }
-
-                if (pdfFiles.length > 0) {
-                    log(`${pdfFiles.length}個のPDFファイルが見つかりました。`);
-                    handleFiles(pdfFiles);
+                const filesWithPaths = await getFilesInDirectory(dirHandle);
+                
+                if (filesWithPaths.length > 0) {
+                    log(`${filesWithPaths.length}個のPDFファイルが見つかりました。`);
+                    updateSelectedFiles(filesWithPaths);
                 } else {
                     handleError(`フォルダ「${dirHandle.name}」内にPDFファイルが見つかりませんでした。`);
                 }
             } catch (error) {
-                if (error.name === 'AbortError') {
-                    log('フォルダ選択がキャンセルされました。');
-                } else {
-                    handleError('フォルダの読み込み中にエラーが発生しました。', error);
-                }
+                if (error.name === 'AbortError') log('フォルダ選択がキャンセルされました。');
+                else handleError('フォルダの読み込み中にエラーが発生しました。', error);
             }
         }
 
         /**
-         * 選択されたファイル群を処理し、UIを更新する
-         * @param {FileList|File[]} fileList 選択されたファイルのリスト
+         * ファイル選択の結果を処理する
+         * @param {FileList} fileList 選択されたファイルのリスト
          */
-        function handleFiles(fileList) {
-            const pdfFiles = Array.from(fileList).filter(file => file.type === 'application/pdf');
-            
+        function handleFileSelection(fileList) {
+            const pdfFiles = Array.from(fileList).filter(f => f.type === 'application/pdf');
             if (pdfFiles.length === 0) {
-                // 既にファイルが選択されている場合は何もしない
-                if (selectedFiles.length === 0) {
-                    handleError('PDFファイルが見つかりませんでした。');
-                    fileNameDisplay.textContent = '';
-                    convertBtn.disabled = true;
-                }
+                if (selectedFiles.length === 0) handleError('PDFファイルが見つかりませんでした。');
                 return;
             }
+            const filesToProcess = pdfFiles.map(f => ({ file: f, relativePath: f.name }));
+            updateSelectedFiles(filesToProcess);
+        }
 
-            selectedFiles = pdfFiles;
+        /**
+         * ドラッグ＆ドロップされたアイテムを処理する
+         * @param {DataTransfer} dataTransfer 
+         */
+        async function handleDrop(dataTransfer) {
+            if (dataTransfer.items && dataTransfer.items.length > 0 && typeof dataTransfer.items[0].webkitGetAsEntry === 'function') {
+                const entries = Array.from(dataTransfer.items).map(item => item.webkitGetAsEntry());
+                showProgress();
+                log('ドロップされたアイテムをスキャン中...');
+                const filesWithPaths = await getFilesFromEntries(entries);
+                if (filesWithPaths.length > 0) {
+                    log(`${filesWithPaths.length}個のPDFファイルが見つかりました。`);
+                    updateSelectedFiles(filesWithPaths);
+                } else {
+                    handleError('ドロップされたアイテムにPDFファイルが見つかりませんでした。');
+                }
+            } else {
+                handleFileSelection(dataTransfer.files);
+            }
+        }
+
+        /**
+         * FileSystemEntryから再帰的にファイルを取得する
+         * @param {FileSystemEntry[]} entries 
+         * @param {string} path 
+         * @returns {Promise<{file: File, relativePath: string}[]>}
+         */
+        async function getFilesFromEntries(entries, path = '') {
+            const allFiles = [];
+            for (const entry of entries) {
+                const newPath = path ? `${path}/${entry.name}` : entry.name;
+                if (entry.isFile) {
+                    const file = await new Promise(resolve => entry.file(resolve));
+                    if (file.name.toLowerCase().endsWith('.pdf')) {
+                        allFiles.push({ file, relativePath: newPath });
+                    }
+                } else if (entry.isDirectory) {
+                    const reader = entry.createReader();
+                    const dirEntries = await new Promise(resolve => reader.readEntries(resolve));
+                    const subFiles = await getFilesFromEntries(dirEntries, newPath);
+                    allFiles.push(...subFiles);
+                }
+            }
+            return allFiles;
+        }
+
+        /**
+         * DirectoryHandleから再帰的にファイルを取得する
+         * @param {FileSystemDirectoryHandle} dirHandle 
+         * @param {string} path 
+         * @returns {Promise<{file: File, relativePath: string}[]>}
+         */
+        async function getFilesInDirectory(dirHandle, path = '') {
+            const files = [];
+            for await (const entry of dirHandle.values()) {
+                const newPath = path ? `${path}/${entry.name}` : entry.name;
+                if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.pdf')) {
+                    const file = await entry.getFile();
+                    files.push({ file, relativePath: newPath });
+                } else if (entry.kind === 'directory') {
+                    const subFiles = await getFilesInDirectory(entry, newPath);
+                    files.push(...subFiles);
+                }
+            }
+            return files;
+        }
+        
+        /**
+         * 選択されたファイルリストを更新し、UIに反映する
+         * @param {{file: File, relativePath: string}[]} filesToProcess
+         */
+        function updateSelectedFiles(filesToProcess) {
+            selectedFiles = filesToProcess;
             if (selectedFiles.length === 1) {
-                fileNameDisplay.textContent = `選択中のファイル: ${selectedFiles[0].name}`;
+                fileNameDisplay.textContent = `選択中のファイル: ${selectedFiles[0].file.name}`;
             } else {
                 fileNameDisplay.textContent = `${selectedFiles.length}個のファイルを選択中`;
             }
@@ -264,82 +283,69 @@
         }
 
         /**
+         * デモ用PDFを生成して選択状態にする
+         */
+        async function generateAndSelectDemo() {
+            try {
+                showProgress();
+                log('デモ用PDFを生成中...');
+                const pdfBytes = await generateDemoPdf();
+                const demoFile = new File([pdfBytes], "demo.pdf", { type: "application/pdf" });
+                updateSelectedFiles([{ file: demoFile, relativePath: demoFile.name }]);
+                log('デモ用PDFの準備ができました。');
+            } catch (error) {
+                handleError('デモPDFの生成に失敗しました。', error);
+            }
+        }
+
+        /**
          * ログエリアにメッセージを追記する
-         * @param {string} message 表示するメッセージ
+         * @param {string} message 
          */
         function log(message) {
             const timestamp = new Date().toLocaleTimeString();
             logArea.textContent += `[${timestamp}] ${message}\n`;
-            logArea.scrollTop = logArea.scrollHeight; // 自動スクロール
+            logArea.scrollTop = logArea.scrollHeight;
         }
         
-        /**
-         * プログレスバーの表示を更新する
-         * @param {number} percentage 0から100の間の数値
-         */
         function updateProgress(percentage) {
             const p = Math.round(percentage);
             progressBar.style.width = `${p}%`;
             progressBar.textContent = `${p}%`;
         }
 
-        /**
-         * 進捗表示エリアを表示/リセットする
-         */
         function showProgress() {
             progressSection.classList.remove('hidden');
             logArea.textContent = '';
             updateProgress(0);
         }
         
-        /**
-         * エラーメッセージを表示する
-         * @param {string} message ユーザーに表示するメッセージ
-         * @param {Error} [error] コンソールに出力するエラーオブジェクト
-         */
         function handleError(message, error = null) {
             errorMessage.textContent = message;
             errorBox.classList.remove('hidden');
-            if (error) {
-                console.error(error);
-                log(`エラー: ${error.message}`);
-            }
-            log(`処理が中断されました: ${message}`);
+            if (error) console.error(error);
+            log(`エラー: ${message}`);
             convertBtn.disabled = false;
         }
 
-        /**
-         * エラーメッセージを非表示にする
-         */
         function hideError() {
             errorBox.classList.add('hidden');
         }
         
-        /**
-         * デモ用のPDFを生成する
-         * @returns {Promise<Uint8Array>} 生成されたPDFのバイト配列
-         */
         async function generateDemoPdf() {
             const pdfDoc = await PDFDocument.create();
             const pageCount = 20;
             const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
             for (let i = 0; i < pageCount; i++) {
                 const page = pdfDoc.addPage();
                 const { width, height } = page.getSize();
-                page.drawText(`デモ用PDF - ${i + 1}ページ目`, {
-                    x: 50,
-                    y: height / 2,
-                    font,
-                    size: 50,
-                    color: rgb(0.9, 0.9, 0.9),
-                });
+                page.drawText(`デモ用PDF - ${i + 1}ページ目`, { x: 50, y: height / 2, font, size: 50, color: rgb(0.9, 0.9, 0.9) });
             }
             return pdfDoc.save();
         }
 
         /**
-         * 選択されたすべてのPDFファイルのバッチ処理を開始する
+         * バッチ処理を開始する
          */
         async function startBatchProcess() {
             if (selectedFiles.length === 0) {
@@ -347,24 +353,35 @@
                 return;
             }
 
-            showProgress();
+            let outputDirHandle;
+            try {
+                if (!('showDirectoryPicker' in window)) {
+                    handleError('この機能はお使いのブラウザに対応していません。ファイルの保存に失敗します。');
+                    return;
+                }
+                showProgress();
+                log('出力先フォルダを選択してください...');
+                outputDirHandle = await window.showDirectoryPicker();
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    log('出力先フォルダの選択がキャンセルされました。処理を中断します。');
+                    if (logArea.textContent.length < 200) progressSection.classList.add('hidden');
+                } else {
+                    handleError('出力先フォルダの選択に失敗しました。', error);
+                }
+                return;
+            }
+            
             hideError();
             convertBtn.disabled = true;
-
             log(`処理を開始します... 合計 ${selectedFiles.length}個のファイル`);
 
             for (let i = 0; i < selectedFiles.length; i++) {
-                const file = selectedFiles[i];
-                const fileNumber = i + 1;
+                const fileObject = selectedFiles[i];
                 log(`---`);
-                log(`[${fileNumber}/${selectedFiles.length}] "${file.name}" の処理を開始`);
+                log(`[${i + 1}/${selectedFiles.length}] "${fileObject.relativePath}" の処理を開始`);
                 updateProgress(0);
-                
-                try {
-                    await processSinglePdf(file);
-                } catch (error) {
-                    handleError(`"${file.name}" の処理中に予期せぬエラーが発生しました。`, error);
-                }
+                await processSinglePdf(fileObject, outputDirHandle);
             }
 
             log(`---`);
@@ -373,26 +390,22 @@
         }
 
         /**
-         * 単一のPDFファイルの面付け処理を実行する
-         * @param {File} file 処理対象のファイル
+         * 単一のPDFファイルを処理し、指定されたフォルダに保存する
+         * @param {{file: File, relativePath: string}} fileObject 
+         * @param {FileSystemDirectoryHandle} outputDirHandle 
          */
-        async function processSinglePdf(file) {
+        async function processSinglePdf(fileObject, outputDirHandle) {
+            const { file, relativePath } = fileObject;
             try {
-                // 設定値の取得と変換
                 const layoutValue = document.getElementById('layout').value;
                 const [cols, rows] = layoutValue.split('x').map(Number);
-                const pagesPerSheet = cols * rows;
                 const margin = parseFloat(document.getElementById('margin').value) * MM_TO_PT;
                 const gutter = parseFloat(document.getElementById('gutter').value) * MM_TO_PT;
-
-                log(`  レイアウト: ${cols}x${rows}, 余白: ${margin/MM_TO_PT}mm, 間隔: ${gutter/MM_TO_PT}mm`);
 
                 const fileBuffer = await file.arrayBuffer();
                 const srcPdf = await PDFDocument.load(fileBuffer, { ignoreEncryption: false });
 
-                if (srcPdf.isEncrypted) {
-                    throw new Error('暗号化されたPDFはサポートされていません。');
-                }
+                if (srcPdf.isEncrypted) throw new Error('暗号化されたPDFはサポートされていません。');
 
                 const pageCount = srcPdf.getPageCount();
                 log(`  元のページ数: ${pageCount}`);
@@ -400,19 +413,14 @@
                 const newPdf = await PDFDocument.create();
                 const embeddedPages = await newPdf.embedPages(srcPdf.getPages());
                 
-                const firstPage = srcPdf.getPage(0);
-                const { width: srcWidth, height: srcHeight } = firstPage.getSize();
-                
+                const { width: srcWidth, height: srcHeight } = srcPdf.getPage(0).getSize();
                 const newPageWidth = (srcWidth * cols) + (gutter * (cols - 1)) + (margin * 2);
                 const newPageHeight = (srcHeight * rows) + (gutter * (rows - 1)) + (margin * 2);
 
-                let currentPage = null;
                 for (let i = 0; i < pageCount; i++) {
-                    const pageIndexInSheet = i % pagesPerSheet;
-
-                    if (pageIndexInSheet === 0) {
-                        currentPage = newPdf.addPage([newPageWidth, newPageHeight]);
-                    }
+                    const pageIndexInSheet = i % (cols * rows);
+                    if (pageIndexInSheet === 0) newPdf.addPage([newPageWidth, newPageHeight]);
+                    const currentPage = newPdf.getPage(newPdf.getPageCount() - 1);
 
                     const col = pageIndexInSheet % cols;
                     const row = Math.floor(pageIndexInSheet / cols);
@@ -420,35 +428,32 @@
                     const y = newPageHeight - margin - (row + 1) * srcHeight - row * gutter;
 
                     currentPage.drawPage(embeddedPages[i], { x, y, width: srcWidth, height: srcHeight });
-                    
                     updateProgress(((i + 1) / pageCount) * 100);
                 }
 
                 log('  PDFを生成中...');
                 const newPdfBytes = await newPdf.save();
 
-                const blob = new Blob([newPdfBytes], { type: 'application/pdf' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
+                // --- ファイル保存処理 ---
                 const suffix = `_${layoutValue}.pdf`;
-                a.download = file.name.replace(/\.pdf$/i, '') + suffix;
-                document.body.appendChild(a);
-                a.click();
-                
-                log(`  "${a.download}" のダウンロードを開始しました。`);
-                
-                setTimeout(() => {
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                }, 100);
+                const newFileName = file.name.replace(/\.pdf$/i, '') + suffix;
+                const pathParts = relativePath.split('/');
+                pathParts.pop();
+
+                let currentDirHandle = outputDirHandle;
+                for (const part of pathParts) {
+                    currentDirHandle = await currentDirHandle.getDirectoryHandle(part, { create: true });
+                }
+
+                log(`  ファイルを保存中: ${[...pathParts, newFileName].join('/')}`);
+                const fileHandle = await currentDirHandle.getFileHandle(newFileName, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(newPdfBytes);
+                await writable.close();
+                log(`  保存が完了しました。`);
 
             } catch (error) {
-                if (error.message.includes('encrypted')) {
-                    handleError(`エラー: "${file.name}" はパスワード保護されています。`, error);
-                } else {
-                    handleError(`エラー: "${file.name}" の処理に失敗しました。`, error);
-                }
+                handleError(`"${file.name}" の処理に失敗しました。${error.message}`, error);
             }
         }
     </script>
