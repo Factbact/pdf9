@@ -5,20 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PDF 3×3 N‑up (Client‑Only)</title>
   <style>
-    :root { --bg:#0b0e14; --fg:#e6e6e6; --muted:#9aa4b2; --accent:#6aa3ff; }
+    :root { --bg:#0b0e14; --fg:#e6e6e6; --muted:#9aa4b2; --accent:#6aa3ff; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444 }
     html,body{height:100%;}
     body{margin:0; font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:var(--bg); color:var(--fg); display:grid; place-items:center}
-    .wrap{width:min(860px,92vw);}
+    .wrap{width:min(920px,94vw);}
     h1{font-size:clamp(18px,2.8vw,28px); margin:24px 0 6px}
     p{color:var(--muted); margin:0 0 12px}
     .panel{background:#0f1420; border:1px solid #1f2836; border-radius:14px; padding:14px}
     .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
     .btn{background:var(--accent); color:#071019; font-weight:600; padding:10px 14px; border-radius:10px; border:none; cursor:pointer}
+    .btn:disabled{opacity:.6; cursor:not-allowed}
     input[type="file"]{display:block; margin:8px 0}
-    pre{white-space:pre-wrap; background:#0f1420; border:1px solid #1f2836; border-radius:12px; padding:10px; min-height:48px}
-    .progress{height:8px; background:#1b2230; border-radius:999px; overflow:hidden; margin-top:8px}
-    .bar{height:100%; width:0%; background:linear-gradient(90deg,#6aa3ff,#9f7aea); transition:width .2s}
+    pre{white-space:pre-wrap; background:#0f1420; border:1px solid #1f2836; border-radius:12px; padding:10px; min-height:72px; max-height:240px; overflow:auto}
+    .progress{height:10px; background:#1b2230; border-radius:999px; overflow:hidden; margin-top:8px}
+    .bar{height:100%; width:0%; background:linear-gradient(90deg,#6aa3ff,#9f7aea); transition:width .15s}
     small{color:#9aa4b2}
+    .status{display:flex; align-items:center; gap:8px; margin-top:8px}
+    .dot{width:10px; height:10px; border-radius:999px; background:#334155; position:relative}
+    .dot.spin::after{content:""; position:absolute; inset:-6px; border:2px solid #334155; border-top-color:#93c5fd; border-radius:999px; animation:spin .9s linear infinite}
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+    @keyframes spin{to{transform:rotate(1turn)}}
   </style>
 </head>
 <body>
@@ -29,39 +35,61 @@
   <div class="panel">
     <div class="row">
       <input id="file" type="file" accept="application/pdf" />
-      <button id="demo" class="btn" type="button">デモPDFでテスト（18ページ）</button>
+      <button id="demo18" class="btn" type="button">デモPDFでテスト（18ページ）</button>
+      <button id="demo9" class="btn" type="button">デモ（9ページ）</button>
+      <button id="demo27" class="btn" type="button">デモ（27ページ）</button>
     </div>
-    <small>※ ブラウザ内でのみ処理。アップロードは行わない。暗号化PDFは非対応。</small>
+    <div class="status"><div id="dot" class="dot"></div><span id="phase">待機中…</span></div>
     <div class="progress"><div class="bar" id="bar"></div></div>
     <pre id="log">待機中…</pre>
+    <small>※ ブラウザ内でのみ処理。アップロードは行わない。暗号化PDFは非対応。</small>
   </div>
 </div>
 
 <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <script>
-(async function(){
+(function(){
   const { PDFDocument, StandardFonts, rgb } = PDFLib;
   const elFile = document.getElementById('file');
-  const elDemo = document.getElementById('demo');
+  const elDemo18 = document.getElementById('demo18');
+  const elDemo9  = document.getElementById('demo9');
+  const elDemo27 = document.getElementById('demo27');
   const elLog  = document.getElementById('log');
   const elBar  = document.getElementById('bar');
+  const elDot  = document.getElementById('dot');
+  const elPhase= document.getElementById('phase');
 
-  const log = (m)=>{ elLog.textContent = m; };
+  const setPhase = (text, spinning=false, cls) => {
+    elPhase.textContent = text;
+    elDot.className = 'dot' + (spinning? ' spin':'');
+    if(cls){ elPhase.className = cls; } else { elPhase.className=''; }
+  };
+  const appendLog = (m)=>{ elLog.textContent += (elLog.textContent? "
+" : "") + m; elLog.scrollTop = elLog.scrollHeight; };
+  const resetLog = (m)=>{ elLog.textContent = m || ''; };
   const progress = (p)=>{ elBar.style.width = Math.max(0, Math.min(100, p)) + '%'; };
+  const disableUI = (on)=>{
+    [elFile, elDemo18, elDemo9, elDemo27].forEach(el=>{ if(!el) return; el.disabled = !!on; });
+  };
 
-  // ===== Core: 3×3 N‑up without relying on pdfjs; per‑page embed for stability =====
+  // ===== Core: 3×3 N‑up; per‑page embed for stability =====
   async function nUp3x3(inputBytes, srcName){
-    const marginPt = 20; // 約7mm相当。mm指定したい場合は変換しても良い。
+    const t0 = performance.now();
+    setPhase('解析開始…', true); resetLog('解析開始…'); progress(3);
+
+    const marginPt = 20; // 約7mm
 
     // 1) Load source
     const srcDoc = await PDFDocument.load(inputBytes, { ignoreEncryption: false });
     const pageCount = srcDoc.getPageCount();
     if (!pageCount) throw new Error('ページがありません');
+    appendLog(`読み込み完了: ${pageCount} ページ`);
 
-    // 2) Base size = source first page size (ignore paper selection entirely)
+    // 2) Base size = first page
     const first = srcDoc.getPage(0);
     const baseW = first.getWidth();
     const baseH = first.getHeight();
+    appendLog(`用紙サイズ: ${baseW.toFixed(1)} × ${baseH.toFixed(1)} pt`);
 
     // 3) Layout numbers
     const cols = 3, rows = 3, perSheet = cols*rows;
@@ -72,20 +100,25 @@
     if (innerW <= 0 || innerH <= 0) throw new Error('余白が大きすぎる/元PDFが小さすぎる');
     const cellW = innerW / cols;
     const cellH = innerH / rows;
+    appendLog(`セル: ${cellW.toFixed(2)} × ${cellH.toFixed(2)} pt`);
 
     // 5) Create output
     const out = await PDFDocument.create();
 
     const sheets = Math.ceil(pageCount / perSheet);
+    appendLog(`出力ページ数（面付け後）: ${sheets}`);
+
     for (let s = 0; s < sheets; s++){
       const page = out.addPage([baseW, baseH]);
+      setPhase(`面付け中… ${s+1}/${sheets}`, true);
+
       for (let r = 0; r < rows; r++){
         for (let c = 0; c < cols; c++){
           const idx = s*perSheet + r*cols + c;
           if (idx >= pageCount) continue;
 
-          // Stable: embed the specific page on demand
-          const [ep] = await out.embedPages(srcDoc, [idx]);
+          const embedded = await out.embedPages(srcDoc, [idx]);
+          const ep = embedded && embedded[0];
           if (!ep) throw new Error('ページの埋め込みに失敗しました (index ' + idx + ')');
 
           const srcW = ep.width, srcH = ep.height;
@@ -96,17 +129,19 @@
           const x = marginPt + c*cellW + (cellW - drawW)/2;
           const y = baseH - marginPt - (r+1)*cellH + (cellH - drawH)/2;
 
-          // Important: use width/height rather than xScale/yScale to avoid internal node errors
           page.drawPage(ep, { x, y, width: drawW, height: drawH });
         }
       }
-      progress(((s+1)/sheets)*100);
-      log(`面付け中… ${s+1}/${sheets}`);
+      const p = ((s+1)/sheets)*100; progress(p);
+      appendLog(`完了: シート ${s+1}/${sheets} (進捗 ${p.toFixed(1)}%)`);
     }
 
-    const outBytes = await out.save({
-      // useObjectStreams: false can help some older viewers; keep default here
-    });
+    setPhase('PDFを生成中…', true); appendLog('PDFを生成中…');
+    const outBytes = await out.save();
+
+    const t1 = performance.now();
+    setPhase(`完了 (${((t1-t0)/1000).toFixed(2)} 秒)`, false, 'ok');
+    appendLog(`所要時間: ${((t1-t0)/1000).toFixed(2)} 秒`);
 
     const fname = (srcName||'output').replace(/\.pdf$/i,'') + '_3x3.pdf';
     triggerDownload(outBytes, fname);
@@ -120,54 +155,56 @@
     setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
   }
 
-  // ===== Demo generator (TEST CASE) =====
-  async function buildDemoPdf(pages=18){
+  // ===== Demo generator (TEST CASES) =====
+  async function buildDemoPdf(pages){
     const doc = await PDFDocument.create();
     const font = await doc.embedFont(StandardFonts.HelveticaBold);
     for(let i=1;i<=pages;i++){
-      // 595×842 ≈ A4 portrait
-      const pg = doc.addPage([595.28, 841.89]);
+      const pg = doc.addPage([595.28, 841.89]); // ≈A4 portrait
       const size = 64;
       pg.drawRectangle({x:40,y:40,width:pg.getWidth()-80,height:pg.getHeight()-80, borderColor: rgb(0.5,0.6,0.9), borderWidth:2});
-      pg.drawText('PAGE ' + i, { x: 70, y: pg.getHeight()/2 - size/2, size, font, color: rgb(0.9,0.9,0.9)});
+      pg.drawText(`PAGE ${i}`, { x: 70, y: pg.getHeight()/2 - size/2, size, font, color: rgb(0.9,0.9,0.9)});
     }
     return await doc.save();
+  }
+
+  async function runWithBytes(bytes, name){
+    try{
+      disableUI(true);
+      progress(0); setPhase('準備中…', true); resetLog('準備中…');
+      await nUp3x3(bytes, name);
+    }catch(err){
+      console.error(err);
+      setPhase('エラー', false, 'err');
+      const msg = (err && (err.message || String(err))) || '不明なエラー';
+      appendLog('エラー：' + msg + '
+(暗号化PDF/破損/非対応バージョンの可能性)');
+    }finally{
+      disableUI(false);
+    }
   }
 
   // ===== Wiring =====
   elFile.addEventListener('change', async (ev)=>{
     const file = ev.target.files && ev.target.files[0];
-    if(!file){ log('PDFを選択してください'); return; }
-    if(!/\.pdf$/i.test(file.name)){ log('PDFのみ対応'); return; }
-    try{
-      progress(5); log('読み込み中…');
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      progress(10); log('変換開始…');
-      await nUp3x3(bytes, file.name);
-      log('完了。自動ダウンロードを確認してください。');
-      progress(100);
-    }catch(err){
-      console.error(err);
-      const msg = (err && (err.message || String(err))) || '不明なエラー';
-      log('エラー：' + msg + '
-(暗号化PDFや壊れたPDFの可能性もあります)');
-      progress(0);
-    }
+    if(!file){ setPhase('ファイル未選択', false, 'warn'); return; }
+    if(!/\.pdf$/i.test(file.name)){ setPhase('PDFのみ対応', false, 'warn'); return; }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    appendLog(`入力: ${file.name} / ${(file.size/1024/1024).toFixed(2)} MB`);
+    await runWithBytes(bytes, file.name);
   });
 
-  elDemo.addEventListener('click', async ()=>{
-    try{
-      progress(5); log('デモPDF生成中…');
-      const demo = await buildDemoPdf(18); // === TEST CASE 1: 18ページ → 3枚出力
-      progress(20); log('3×3面付けを実行…');
-      await nUp3x3(demo, 'demo_18pages.pdf');
-      log('デモ完了。');
-      progress(100);
-    }catch(err){
-      console.error(err);
-      log('デモ失敗：' + (err?.message || err));
-      progress(0);
-    }
+  elDemo18.addEventListener('click', async ()=>{
+    const demo = await buildDemoPdf(18); // === TEST CASE 1: 18ページ → 3枚
+    await runWithBytes(demo, 'demo_18pages.pdf');
+  });
+  elDemo9.addEventListener('click', async ()=>{
+    const demo = await buildDemoPdf(9);  // === TEST CASE 2: 9ページ → 1枚
+    await runWithBytes(demo, 'demo_9pages.pdf');
+  });
+  elDemo27.addEventListener('click', async ()=>{
+    const demo = await buildDemoPdf(27); // === TEST CASE 3: 27ページ → 3枚
+    await runWithBytes(demo, 'demo_27pages.pdf');
   });
 })();
 </script>
